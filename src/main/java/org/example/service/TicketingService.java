@@ -1,10 +1,7 @@
 package org.example.service;
 
 
-import org.example.model.Booking;
-import org.example.model.Route;
-import org.example.model.StationStop;
-import org.example.model.Train;
+import org.example.model.*;
 import org.example.repository.BookingRepository;
 import org.example.repository.RouteRepository;
 import org.example.repository.TrainRepository;
@@ -14,6 +11,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
+
+
 
 public class TicketingService {
     private final TrainRepository trainRepository;
@@ -84,6 +83,80 @@ public class TicketingService {
         bookingRepository.save(booking);
         emailService.sendBookingConfirmation(booking);
         return booking;
+    }
+
+    public List<JourneyOption> findJourneyOptions(String departureStation, String arrivalStation) {
+        List<JourneyOption> options = new ArrayList<>();
+
+        for (Train train : trainRepository.findAll()) {
+            Route route = getRouteForTrain(train);
+            if (route.canTravelForward(departureStation, arrivalStation)) {
+                StationStop departureStop = route.getStop(departureStation);
+                StationStop arrivalStop = route.getStop(arrivalStation);
+                options.add(JourneyOption.direct(
+                        train.getId(),
+                        departureStation,
+                        arrivalStation,
+                        departureStop.getDepartureTime(),
+                        arrivalStop.getArrivalTime()
+                ));
+            }
+        }
+
+        options.addAll(findChangeoverOptions(departureStation, arrivalStation));
+        options.sort(Comparator.comparing(JourneyOption::getDepartureTime));
+        return options;
+    }
+
+    private List<JourneyOption> findChangeoverOptions(String departureStation, String arrivalStation) {
+        List<JourneyOption> options = new ArrayList<>();
+        List<Train> trains = trainRepository.findAll();
+
+        for (Train firstTrain : trains) {
+            Route firstRoute = getRouteForTrain(firstTrain);
+            int departureIndex = firstRoute.getStopIndex(departureStation);
+            if (departureIndex < 0) {
+                continue;
+            }
+
+            for (int i = departureIndex + 1; i < firstRoute.getStops().size(); i++) {
+                StationStop changeoverStopFirstRoute = firstRoute.getStops().get(i);
+                String changeoverStation = changeoverStopFirstRoute.getStationName();
+                LocalTime firstTrainArrivalAtChangeover = changeoverStopFirstRoute.getArrivalTime();
+
+                for (Train secondTrain : trains) {
+                    if (firstTrain.getId().equalsIgnoreCase(secondTrain.getId())) {
+                        continue;
+                    }
+
+                    Route secondRoute = getRouteForTrain(secondTrain);
+                    if (!secondRoute.canTravelForward(changeoverStation, arrivalStation)) {
+                        continue;
+                    }
+
+                    StationStop changeoverStopSecondRoute = secondRoute.getStop(changeoverStation);
+                    StationStop arrivalStop = secondRoute.getStop(arrivalStation);
+
+                    LocalTime secondTrainDeparture = changeoverStopSecondRoute.getDepartureTime();
+                    if (firstTrainArrivalAtChangeover != null
+                            && secondTrainDeparture != null
+                            && !secondTrainDeparture.isBefore(firstTrainArrivalAtChangeover)) {
+                        StationStop departureStop = firstRoute.getStop(departureStation);
+                        options.add(JourneyOption.withChangeover(
+                                firstTrain.getId(),
+                                secondTrain.getId(),
+                                departureStation,
+                                arrivalStation,
+                                changeoverStation,
+                                departureStop.getDepartureTime(),
+                                arrivalStop.getArrivalTime()
+                        ));
+                    }
+                }
+            }
+        }
+
+        return options;
     }
 
     public void addRoute(Route route) {
